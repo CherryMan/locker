@@ -1,0 +1,151 @@
+#! /usr/bin/env sh
+
+# Requires i3lock, ffmpeg and imagemagick
+#
+# Lock the system with an image of the current desktop
+# state, blurred.
+
+
+## ---- Help info
+usage () {
+cat << EOF
+$(basename "$0") [OPTIONS] ...
+
+Options:
+    -m      Monitor size for screenshotting. Format is WIDTHxHEIGHT.
+    -n      Overlay image size.
+    -t      Full path to temporary image, including extension.
+            Subdirectories must exist, and image must not.
+            Defaults to '/tmp/lock_image.png'
+EOF
+}
+
+
+## ---- Misc functions
+log() {
+    echo "$@"
+}
+
+err() {
+    echo >&2 "$@"
+}
+
+# Remove generated files
+cleanup() {
+    rm "$img_out"
+}
+
+have() {
+    command -v "$@" > /dev/null
+    return $?
+}
+
+# Make sure everything is ok
+validate_opt() {
+
+    if [ -z "$mon_size" ]; then
+        log "Monitor size not specified. Trying to get monitor size."
+        setmonsize
+
+        if [ -n "$mon_size" ]; then
+            log "Got size '$mon_size'"
+        else
+            err "Could not set monitor size. Aborting."
+            exit 1
+        fi
+    fi
+
+    if ! have ffmpeg; then
+        err "ffmpeg is not installed. Aborting."
+        exit 1
+    fi
+
+    if [ -f "$img_out" ]; then
+        err "Image '$img_out' already exists, not overriding. Aborting"
+        exit 10
+    fi
+
+    if ! [ -d "$(dirname "$img_out")" ]; then
+        err "Directory to '$img_out' does not exist. Aborting"
+        exit 10
+    fi
+}
+
+setmonsize() {
+        if [ -n "$DISPLAY" ] && have xrandr; then
+            mon_size="$(
+                xrandr --query           \
+                | grep -E 'Screen [0-9]' \
+                | head -n 1              \
+                | sed -E 's/.*current ([0-9]{1,}) x ([0-9]{1,}).*/\1x\2/'
+            )"
+        else
+            err "Failed to get monitor size. Aborting"
+            exit 1
+        fi
+}
+
+## ---- Build the image to lock with
+mkimgffmpeg() {
+    ffmpeg                      \
+        -loglevel error         \
+        -f x11grab              \
+        -video_size "$mon_size" \
+        -y                      \
+        -i "$DISPLAY"           \
+        -vframes 1              \
+        "$img_out"              \
+        -filter_complex         \
+            'gblur=sigma=14:steps=2'
+}
+
+mkimg() {
+    if have ffmpeg; then
+        log "Using ffmpeg backend"
+
+        if ! mkimgffmpeg; then
+            err "Failed to create screenshot with ffmpeg"
+            exit 2
+        fi
+    fi
+}
+
+
+## ---- Lock
+lock() {
+    mkimg
+    i3lock -n -i "$img_out"
+}
+
+
+## ---- Script runs here
+
+mon_size=
+img_out="/tmp/lock_img.png"
+while getopts "m:o:t:h" opt; do
+    case "$opt" in
+        m)
+            mon_size="$OPTARG"
+            ;;
+
+        t)
+            img_out="$OPTARG"
+            ;;
+
+        h|?)
+            usage
+            exit 0
+            ;;
+    esac
+done
+
+# Make sure options are compatible
+validate_opt
+
+# Make sure we exit cleanly
+# Must be called after validate_opt to make sure we
+# don't cleanup the wrong files.
+trap 'cleanup' HUP TERM EXIT INT
+
+
+lock
